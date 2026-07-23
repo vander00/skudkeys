@@ -28,11 +28,16 @@ const (
 	ModeBot     Mode = "bot"
 )
 
+const (
+	DefaultAppID   = 17349
+	DefautlAppHash = "344583e45741c457fe1862106095a5eb"
+)
+
 type Config struct {
 	Mode         Mode
 	SkudUnionID  string
 	SkudJWT      string
-	SkudContract string
+	SkudContract string // Login
 	SkudPassword string
 	KeyName      string
 	Debug        bool
@@ -71,7 +76,7 @@ func (e *StartupError) Error() string {
 	return e.Message
 }
 
-func Load(args []string) (*Config, Settings, Options, error) {
+func Load(args []string) (*Config, Settings, []string, Options, error) {
 	fs := flag.NewFlagSet("skudkey", flag.ContinueOnError)
 	fs.SetOutput(&bytes.Buffer{})
 
@@ -102,7 +107,7 @@ func Load(args []string) (*Config, Settings, Options, error) {
 	flagNoBrowser := fs.Bool("no-browser", false, "do not open a browser on startup")
 
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, Options{}, &StartupError{
+		return nil, nil, nil, Options{}, &StartupError{
 			Code:       ExitConfig,
 			Message:    "could not parse command-line flags: " + err.Error(),
 			Suggestion: "run with --help to see all flags",
@@ -136,22 +141,23 @@ func Load(args []string) (*Config, Settings, Options, error) {
 
 	opts := Options{Port: *flagPort, NoBrowser: *flagNoBrowser}
 
-	cfg, err := FromSettings(settings)
+	cfg, warnings, err := FromSettings(settings)
 	if err != nil {
-		return nil, settings, opts, err
+		return nil, settings, warnings, opts, err
 	}
-	return cfg, settings, opts, nil
+	return cfg, settings, warnings, opts, nil
 }
 
-func FromSettings(s Settings) (*Config, error) {
+func FromSettings(s Settings) (*Config, []string, error) {
 	get := func(key string) string { return strings.TrimSpace(s[key]) }
+	var warnings []string
 
 	mode := Mode(strings.ToLower(get("MODE")))
 	if mode == "" {
 		mode = ModeHistory
 	}
 	if mode != ModeHistory && mode != ModeMTProto && mode != ModeBot {
-		return nil, &StartupError{
+		return nil, nil, &StartupError{
 			Code:       ExitConfig,
 			Message:    fmt.Sprintf("invalid mode %q", string(mode)),
 			Suggestion: `use "history", "mtproto" or "bot"`,
@@ -171,7 +177,6 @@ func FromSettings(s Settings) (*Config, error) {
 		ProcessExisting: truthy(get("PROCESS_EXISTING")),
 
 		TelegramToken: get("TELEGRAM_TOKEN"),
-		APIHash:       get("API_HASH"),
 		Phone:         get("PHONE"),
 		Password:      get("PASSWORD"),
 		SessionPath:   get("SESSION_PATH"),
@@ -182,13 +187,13 @@ func FromSettings(s Settings) (*Config, error) {
 
 	var err error
 	if cfg.PollInterval, err = duration(get("POLL_INTERVAL"), 30*time.Second); err != nil {
-		return nil, &StartupError{
+		return nil, nil, &StartupError{
 			Code: ExitConfig, Message: "invalid poll interval: " + err.Error(),
 			Suggestion: `use a Go duration such as "30s" or "2m"`,
 		}
 	}
 	if cfg.Lookback, err = duration(get("LOOKBACK"), 15*time.Minute); err != nil {
-		return nil, &StartupError{
+		return nil, nil, &StartupError{
 			Code: ExitConfig, Message: "invalid lookback: " + err.Error(),
 			Suggestion: `use a Go duration such as "15m" or "1h"`,
 		}
@@ -197,7 +202,7 @@ func FromSettings(s Settings) (*Config, error) {
 	if v := get("CHAT_ID"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return nil, &StartupError{
+			return nil, nil, &StartupError{
 				Code:       ExitChatID,
 				Message:    fmt.Sprintf("invalid chat id %q: must be a whole number (group ids are usually negative, e.g. -1001234567890)", v),
 				Suggestion: "read chat.id from getUpdates",
@@ -206,19 +211,43 @@ func FromSettings(s Settings) (*Config, error) {
 		cfg.ChatID = id
 	}
 
-	if v := get("API_ID"); v != "" {
-		id, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, &StartupError{
-				Code:       ExitConfig,
-				Message:    fmt.Sprintf("invalid api id %q: must be a whole number", v),
-				Suggestion: "copy api_id exactly as shown on my.telegram.org",
+	{
+		v := get("API_ID")
+		var id int
+		switch v {
+		case "":
+			id = DefaultAppID
+			warnings = append(warnings, "the API_ID value is not entered. Using the developers one.\nSet it not to have problems with requests.")
+			warnings = append(warnings, "also using the default API_HASH with the default API_ID")
+			cfg.APIHash = DefautlAppHash
+		default:
+			id, err = strconv.Atoi(v)
+			if err != nil {
+				return nil, nil, &StartupError{
+					Code:       ExitConfig,
+					Message:    fmt.Sprintf("invalid api id %q: must be a whole number", v),
+					Suggestion: "copy api_id exactly as shown on my.telegram.org",
+				}
 			}
 		}
 		cfg.APIID = id
 	}
 
-	return cfg, nil
+	if cfg.APIHash != DefautlAppHash {
+		v := get("API_HASH")
+		switch v {
+		case "":
+			return nil, nil, &StartupError{
+				Code:       ExitConfig,
+				Message:    "API_ID is set but API_HASH is not",
+				Suggestion: "enter API_HASH to use the MTProto method",
+			}
+		default:
+			cfg.APIHash = v
+		}
+	}
+
+	return cfg, warnings, nil
 }
 
 func (c *Config) Missing() []string {
