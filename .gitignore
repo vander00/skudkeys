@@ -1,0 +1,8 @@
+.env
+
+*.session
+session.json
+
+skudkey
+skudkey.exe
+/dist/
