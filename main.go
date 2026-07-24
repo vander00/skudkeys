@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"skudkey/src/config"
@@ -14,12 +16,54 @@ import (
 	"skudkey/src/runner"
 )
 
+const (
+	logDirectoryName = "logs"
+	logFileName      = "log.txt"
+)
+
+func openLogFile(dirName string, fileName string) (*os.File, error) {
+	if err := os.Mkdir(dirName, os.ModePerm); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("couldn't create the directory for logs: %s: %w", dirName, err)
+	}
+
+	fullPath := filepath.Join(dirName, fileName)
+
+	var file *os.File
+	var err error
+
+	_, statErr := os.Stat(fullPath)
+	switch {
+	case errors.Is(statErr, os.ErrNotExist):
+		file, err = os.Create(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't create the log file: %s: %w", fullPath, err)
+		}
+	case statErr != nil:
+		return nil, fmt.Errorf("couldn't stat the log file: %s: %w", fullPath, statErr)
+	default:
+		file, err = os.OpenFile(fullPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't open the log file: %s: %w", fullPath, err)
+		}
+	}
+
+	return file, nil
+}
+
 func main() {
 	os.Exit(run())
 }
 
 func run() int {
 	log := logging.New(os.Stdout)
+	logFile, err := openLogFile(logDirectoryName, logFileName)
+	if err != nil {
+		log.Warn("%s", err)
+	} else if log, err = log.WithFile(logFile); err != nil {
+		log.Warn("%s", err)
+	} else {
+		log.Info("log file created: %s", logFile.Name())
+	}
 	keys := gui.NewKeyLog()
 
 	cfg, settings, warnings, opts, err := config.Load(os.Args[1:])
